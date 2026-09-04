@@ -25,7 +25,8 @@ The target is preserved verbatim, including meaningful spacing and non-ASCII tex
 2. **Ask adaptively:** generate one A/B pair just in time from the target and prior decisions. Begin with macro direction and narrow toward details.
 3. **Choose:** accept `A`, `B`, `M` (hybrid), `N` (neither), or `D` (the user's direct decision). A reason is optional. M and D require resolution text so the durable preference is unambiguous.
 4. **Adapt transparently:** a plan revision records the old estimate, new estimate, full replacement decision map, timestamp, and non-empty reason. Presented map entries cannot disappear. Status surfaces the latest change, e.g. `예상 질문 수가 8개에서 11개로 변경되었습니다: …`.
-5. **Finish and compile:** after presented comparisons are answered, compile recorded preferences. Every compile allocates a fresh version and cannot silently overwrite an existing directory.
+5. **Finish and compile:** after all planned comparisons are answered, synthesize confirmed rules, anti-rules, contextual rules, unresolved items, and decision boundaries. Every rule must cite a recorded comparison. Every compile allocates a fresh version and cannot silently overwrite an existing directory.
+6. **Apply:** load the latest or an explicitly requested immutable profile as prompt-ready context. Confirmed rules and boundaries are applied; unresolved items remain unresolved.
 
 Progress is intentionally an estimate, shown as `(3/11 예정)`. The numerator is the current presented round (or answered count when no question is active); the denominator is the current estimate. It is not a fabricated certainty.
 
@@ -46,7 +47,9 @@ The canonical session record is append-only JSON Lines:
 .tasty/sessions/<id>/events.jsonl
 ```
 
-Events cover session start, initial plan, comparison presentation, choice, plan revision, completion, and profile compilation. State is rebuilt by replay. Session data is gitignored and created private by default. The MVP assumes one writer per session; cross-process locking and event signatures are future work.
+Events cover session start, initial plan, comparison presentation, choice, plan revision, completion, and profile compilation. State is rebuilt by fail-closed replay, and a candidate transition is validated before it is appended. Session data is gitignored and created private by default.
+
+The MVP assumes a trusted local workspace and one Tasty writer per session. Final file components are opened with no-follow semantics, and ancestor components are checked before I/O. A hostile process that can replace workspace directories between those checks is outside the MVP threat model. Cross-process locking, directory-handle-relative I/O, event signatures, atomic directory publication, and fsync durability are future work.
 
 Compiled profiles live at:
 
@@ -57,7 +60,7 @@ profiles/<target-slug>/v0001/
   decision-receipt.md
 ```
 
-`TASTE.md` is the readable profile, `taste.yaml` is the machine-readable equivalent, and `decision-receipt.md` records decisions and denominator revisions. Profile versions are immutable by convention and protected by exclusive file creation/new version directories. Profiles are intentionally eligible for explicit commits.
+`TASTE.md` is the readable profile, `taste.yaml` is the machine-readable equivalent, and `decision-receipt.md` records decisions and denominator revisions. The readable and machine profiles separate confirmed rules, anti-rules, contextual rules, unresolved items, and decision boundaries. Synthesized rules must cite decided comparison IDs in the source session; accepting rules cannot be inferred from a `neither` decision. On apply, the loader validates the schema, session, target, version, preferences, references, and synthesis, then requires `TASTE.md` to exactly match the deterministic machine-profile rendering. Profile versions are immutable by convention and protected by exclusive file creation/new version directories. Profiles are intentionally eligible for explicit commits.
 
 ## Realistic walkthrough
 

@@ -38,6 +38,24 @@ export interface Decision {
   decidedAt: string;
 }
 
+export interface EvidencedRule {
+  rule: string;
+  evidenceComparisonIds: string[];
+}
+
+export interface ContextualRule extends EvidencedRule {
+  context: string;
+}
+
+export interface ProfileSynthesis {
+  summary: string;
+  confirmedRules: EvidencedRule[];
+  antiRules: EvidencedRule[];
+  contextualRules: ContextualRule[];
+  unresolved: string[];
+  decisionBoundaries: string[];
+}
+
 export interface PlanRevision {
   previousEstimate: number;
   newEstimate: number;

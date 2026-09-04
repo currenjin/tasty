@@ -88,6 +88,14 @@ describe("Tasty vertical flow", () => {
       resolution: "Concise, with friendly examples",
       reason: "Both qualities matter",
     });
+    session = await service.present(session.id, {
+      planItemId: "examples",
+      candidates: [
+        { label: "A", text: "A few focused examples" },
+        { label: "B", text: "Many comprehensive examples" },
+      ],
+    });
+    session = await service.choose(session.id, { choice: "A", reason: "Keep the guide concise" });
     session = await service.complete(session.id);
 
     const resumed = await new TastyService(root).resume(session.id);
@@ -116,6 +124,8 @@ describe("Tasty vertical flow", () => {
       "comparison_presented",
       "choice_recorded",
       "plan_revised",
+      "comparison_presented",
+      "choice_recorded",
       "comparison_presented",
       "choice_recorded",
       "session_completed",

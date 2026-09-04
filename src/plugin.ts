@@ -1,6 +1,6 @@
 import { tool, type Plugin } from "@opencode-ai/plugin";
 import { TastyService } from "./service.js";
-import type { Candidate, ChoiceType, PlanItem, Reference } from "./types.js";
+import type { Candidate, ChoiceType, PlanItem, ProfileSynthesis, Reference } from "./types.js";
 
 const s = tool.schema;
 const planItemSchema = s.object({
@@ -19,6 +19,18 @@ const candidateSchema = s.object({
   label: s.enum(["A", "B"]),
   text: s.string().min(1),
   referenceIds: s.array(s.string()).optional(),
+});
+const evidencedRuleSchema = s.object({
+  rule: s.string().min(1),
+  evidenceComparisonIds: s.array(s.string().min(1)).min(1),
+});
+const synthesisSchema = s.object({
+  summary: s.string().min(1),
+  confirmedRules: s.array(evidencedRuleSchema),
+  antiRules: s.array(evidencedRuleSchema),
+  contextualRules: s.array(evidencedRuleSchema.extend({ context: s.string().min(1) })),
+  unresolved: s.array(s.string().min(1)),
+  decisionBoundaries: s.array(s.string().min(1)),
 });
 
 function json(value: unknown): string {
@@ -127,10 +139,18 @@ const TastyPlugin: Plugin = async () => ({
     }),
     tasty_compile: tool({
       description:
-        "Compile the recorded choices into a new immutable profile version containing TASTE.md, taste.yaml, and decision-receipt.md. Never overwrites a version.",
-      args: { sessionId: s.string().min(1) },
+        "Compile recorded choices into an evidenced, immutable Taste Profile. Generalize choices into rules, anti-rules, contextual rules, unresolved items, and decision boundaries without inventing unsupported evidence.",
+      args: { sessionId: s.string().min(1), synthesis: synthesisSchema },
       async execute(args, context) {
-        return json(await new TastyService(context.directory).compile(args.sessionId));
+        return json(await new TastyService(context.directory).compile(args.sessionId, args.synthesis as ProfileSynthesis));
+      },
+    }),
+    tasty_apply: tool({
+      description:
+        "Load the latest (or requested) immutable Taste Profile as prompt-ready context. Apply confirmed and contextual rules, honor anti-rules and boundaries, and keep unresolved items unresolved.",
+      args: { sessionId: s.string().min(1), version: s.number().int().positive().optional() },
+      async execute(args, context) {
+        return json(await new TastyService(context.directory).apply(args.sessionId, args.version));
       },
     }),
   },

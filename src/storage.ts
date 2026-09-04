@@ -1,7 +1,8 @@
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { SessionEvent, TasteSession } from "./types.js";
 import { reduceEvents } from "./core.js";
+import { appendUtf8NoFollow, assertNoSymbolicLinks, readUtf8NoFollow, writeUtf8ExclusiveNoFollow } from "./filesystem.js";
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
@@ -20,25 +21,29 @@ export class FileSessionStore {
   async create(events: SessionEvent[]): Promise<TasteSession> {
     const session = reduceEvents(events);
     const directory = path.dirname(this.eventPath(session.id));
+    await assertNoSymbolicLinks(this.rootDir, this.sessionsDir);
     await mkdir(this.sessionsDir, { recursive: true, mode: 0o700 });
+    await assertNoSymbolicLinks(this.rootDir, this.sessionsDir);
     await mkdir(directory, { recursive: false, mode: 0o700 });
-    await appendFile(this.eventPath(session.id), events.map((event) => `${JSON.stringify(event)}\n`).join(""), {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
+    await assertNoSymbolicLinks(this.rootDir, directory);
+    await writeUtf8ExclusiveNoFollow(
+      this.eventPath(session.id),
+      events.map((event) => `${JSON.stringify(event)}\n`).join(""),
+    );
     return session;
   }
 
   async append(sessionId: string, event: SessionEvent): Promise<TasteSession> {
-    const current = await this.load(sessionId);
-    if (event.at < current.updatedAt) throw new Error("event timestamp cannot go backwards");
-    await appendFile(this.eventPath(sessionId), `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
-    return this.load(sessionId);
+    await assertNoSymbolicLinks(this.rootDir, this.eventPath(sessionId));
+    const existing = await this.events(sessionId);
+    const next = reduceEvents([...existing, event]);
+    await appendUtf8NoFollow(this.eventPath(sessionId), `${JSON.stringify(event)}\n`);
+    return next;
   }
 
   async load(sessionId: string): Promise<TasteSession> {
-    const raw = await readFile(this.eventPath(sessionId), "utf8");
+    await assertNoSymbolicLinks(this.rootDir, this.eventPath(sessionId));
+    const raw = await readUtf8NoFollow(this.eventPath(sessionId));
     const events = raw
       .split("\n")
       .filter(Boolean)
@@ -53,12 +58,14 @@ export class FileSessionStore {
   }
 
   async events(sessionId: string): Promise<SessionEvent[]> {
-    const raw = await readFile(this.eventPath(sessionId), "utf8");
+    await assertNoSymbolicLinks(this.rootDir, this.eventPath(sessionId));
+    const raw = await readUtf8NoFollow(this.eventPath(sessionId));
     return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as SessionEvent);
   }
 
   async list(): Promise<string[]> {
     try {
+      await assertNoSymbolicLinks(this.rootDir, this.sessionsDir);
       return (await readdir(this.sessionsDir, { withFileTypes: true }))
         .filter((entry) => entry.isDirectory() && SAFE_ID.test(entry.name))
         .map((entry) => entry.name)

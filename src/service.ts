@@ -1,5 +1,5 @@
 import path from "node:path";
-import { compileProfile, type CompiledProfile } from "./compiler.js";
+import { compileProfile, loadCompiledProfile, type AppliedProfile, type CompiledProfile } from "./compiler.js";
 import {
   completeSession,
   presentComparison,
@@ -11,7 +11,7 @@ import {
   systemClock,
 } from "./core.js";
 import { FileSessionStore } from "./storage.js";
-import type { Candidate, ChoiceType, Clock, IdSource, PlanItem, Reference, TasteSession } from "./types.js";
+import type { Candidate, ChoiceType, Clock, IdSource, PlanItem, ProfileSynthesis, Reference, TasteSession } from "./types.js";
 
 export class TastyService {
   readonly store: FileSessionStore;
@@ -63,12 +63,17 @@ export class TastyService {
     return this.store.load(sessionId);
   }
 
-  async compile(sessionId: string): Promise<CompiledProfile> {
+  async compile(sessionId: string, synthesis?: ProfileSynthesis): Promise<CompiledProfile> {
     const session = await this.store.load(sessionId);
     if (session.status !== "complete") throw new Error("session must be complete before compiling");
-    const compiled = await compileProfile(this.rootDir, session, this.clock.now());
+    const compiled = await compileProfile(this.rootDir, session, this.clock.now(), synthesis);
     await this.store.append(sessionId, compiled.event);
     return compiled;
+  }
+
+  async apply(sessionId: string, version?: number): Promise<AppliedProfile> {
+    const session = await this.store.load(sessionId);
+    return loadCompiledProfile(this.rootDir, session, version);
   }
 
   profilePath(relativePath: string): string {
