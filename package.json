@@ -1,0 +1,28 @@
+{
+  "name": "tasty-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A file-based, adaptive pairwise decision assistant for OpenCode",
+  "exports": {
+    ".": "./src/index.ts",
+    "./plugin": "./src/plugin.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.27",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

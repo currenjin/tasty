@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+
+# Decision sessions may contain private user context and are never committed.
+.tasty/sessions/
+.tasty/tmp/
+
+# Compiled profiles are intentionally NOT ignored; users opt in by git add.
