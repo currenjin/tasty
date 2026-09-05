@@ -1,11 +1,22 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { importGraph, specifiers } from "./import-graph.js";
+import { importGraph } from "./import-graph.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OPENCODE_PACKAGE = "@opencode-ai/plugin";
+
+/**
+ * Tasty is host-independent: it is a core library plus a standalone CLI, and nothing else. The host
+ * integration that once lived here was removed, so this file is the single place in the repository
+ * allowed to name it — everywhere else, naming it is the regression these tests catch.
+ */
+const REMOVED_HOST = "opencode";
+const REMOVED_PACKAGE = "@opencode-ai/plugin";
+const SELF = path.relative(repoRoot, fileURLToPath(import.meta.url));
+
+/** Generated or vendored trees are not part of the repository's own surface. */
+const NOT_OURS = new Set(["node_modules", "dist", "coverage", ".git", ".tasty"]);
 
 interface ExportTarget {
   types: string;
@@ -33,24 +44,56 @@ function fromSource(specifier: string): string {
   return specifier.replace(/\.js$/, ".ts");
 }
 
-describe("standalone package boundary", () => {
+async function exists(target: string): Promise<boolean> {
+  return access(path.join(repoRoot, target)).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Every file the repository owns, relative to its root, excluding generated and vendored trees. */
+async function ownedFiles(directory = ""): Promise<string[]> {
+  const entries = await readdir(path.join(repoRoot, directory), { withFileTypes: true });
+  const found: string[] = [];
+  for (const entry of entries) {
+    if (NOT_OURS.has(entry.name)) continue;
+    const relative = path.join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...(await ownedFiles(relative)));
+    else if (entry.isFile()) found.push(relative);
+  }
+  return found.sort();
+}
+
+/** Files whose path or text still names the removed host, which is what "host-independent" forbids. */
+async function hostReferences(): Promise<string[]> {
+  const offenders: string[] = [];
+  for (const file of await ownedFiles()) {
+    if (file === SELF) continue;
+    if (file.toLowerCase().includes(REMOVED_HOST)) {
+      offenders.push(file);
+      continue;
+    }
+    const text = await readFile(path.join(repoRoot, file), "utf8").catch(() => "");
+    if (text.toLowerCase().includes(REMOVED_HOST)) offenders.push(file);
+  }
+  return offenders;
+}
+
+describe("host-independent package boundary", () => {
   it("identifies the package as independent Tasty with a CLI entry point", async () => {
     const pkg = await manifest();
     expect(pkg.name).toBe("tasty");
-    expect(pkg.description).not.toMatch(/for OpenCode/i);
+    expect(pkg.description).toMatch(/standalone CLI/i);
     expect(pkg.bin).toMatchObject({ tasty: expect.stringContaining("cli") });
     expect(pkg.scripts.build).toBeTypeOf("string");
   });
 
-  it("exports built JavaScript with type declarations for the core, the CLI, and the adapter subpaths", async () => {
+  it("exports the core and the CLI, and no host adapter or plugin subpath", async () => {
     const pkg = await manifest();
+    expect(Object.keys(pkg.exports).sort()).toEqual([".", "./cli", "./package.json"]);
     expect(pkg.exports["."]).toEqual({ types: "./dist/src/index.d.ts", default: "./dist/src/index.js" });
     expect(pkg.exports["./cli"]).toEqual({ types: "./dist/src/cli.d.ts", default: "./dist/src/cli.js" });
-    expect(pkg.exports["./adapters/opencode"]).toEqual({
-      types: "./dist/src/adapters/opencode.d.ts",
-      default: "./dist/src/adapters/opencode.js",
-    });
-    expect(pkg.exports["./plugin"]).toEqual({ types: "./dist/src/plugin.d.ts", default: "./dist/src/plugin.js" });
+    expect(pkg.exports["./package.json"]).toBe("./package.json");
   });
 
   it("publishes every export target and the bin from the shipped build output", async () => {
@@ -65,44 +108,46 @@ describe("standalone package boundary", () => {
     }
   });
 
-  it("keeps OpenCode out of production dependencies and offers it as an optional peer", async () => {
+  it("declares no host dependency in any dependency field, not even an optional peer", async () => {
     const pkg = await manifest();
-    expect(pkg.dependencies).not.toHaveProperty(OPENCODE_PACKAGE);
-    expect(pkg.dependencies).toHaveProperty("yaml");
-    expect(pkg.devDependencies).toHaveProperty(OPENCODE_PACKAGE);
-    expect(pkg.peerDependencies).toHaveProperty(OPENCODE_PACKAGE);
-    expect(pkg.peerDependenciesMeta?.[OPENCODE_PACKAGE]?.optional).toBe(true);
+    expect(pkg.dependencies).toEqual({ yaml: expect.any(String) });
+    expect(pkg.devDependencies).not.toHaveProperty(REMOVED_PACKAGE);
+    expect(pkg.peerDependencies ?? {}).toEqual({});
+    expect(pkg.peerDependenciesMeta ?? {}).toEqual({});
   });
 
-  it("locks the same tree the manifest declares, so `npm ci --omit=dev` installs no OpenCode", async () => {
+  it("locks exactly the tree the manifest declares, with no host package anywhere in it", async () => {
     const pkg = await manifest();
     const lock = JSON.parse(await readFile(path.join(repoRoot, "package-lock.json"), "utf8")) as {
       name: string;
-      packages: Record<string, { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; dev?: boolean }>;
+      packages: Record<string, { dependencies?: Record<string, string>; devDependencies?: Record<string, string> }>;
     };
     const root = lock.packages[""]!;
 
     expect(lock.name).toBe(pkg.name);
     expect(root.dependencies).toEqual(pkg.dependencies);
     expect(root.devDependencies).toEqual(pkg.devDependencies);
-    expect(lock.packages[`node_modules/${OPENCODE_PACKAGE}`]?.dev).toBe(true);
+    expect(Object.keys(lock.packages).filter((name) => name.includes("@opencode-ai/"))).toEqual([]);
   });
 
-  it("never reaches OpenCode from the core or CLI import graph", async () => {
+  it("holds no host adapter or plugin compatibility module in the source tree", async () => {
+    expect(await exists(path.join("src", "plugin.ts"))).toBe(false);
+    expect(await exists(path.join("src", "adapters"))).toBe(false);
+  });
+
+  it("tracks no host integration directory in the workspace", async () => {
+    expect(await exists(`.${REMOVED_HOST}`)).toBe(false);
+  });
+
+  it("reaches only Node built-ins and yaml from the core and CLI import graphs", async () => {
     for (const entry of ["src/index.ts", "src/cli.ts"]) {
       const graph = await importGraph(repoRoot, entry, fromSource);
-      expect(graph.packages).not.toContain(OPENCODE_PACKAGE);
-      expect(graph.packages.every((name) => name.startsWith("node:") || name === "yaml")).toBe(true);
-      expect(graph.files).not.toContain("src/plugin.ts");
-      expect(graph.files).not.toContain(path.join("src", "adapters", "opencode.ts"));
+      expect(graph.packages.every((name) => name.startsWith("node:") || name === "yaml"), entry).toBe(true);
     }
   });
 
-  it("keeps the OpenCode adapter isolated behind its own module", async () => {
-    const adapter = await importGraph(repoRoot, "src/adapters/opencode.ts", fromSource);
-    expect(adapter.packages).toContain(OPENCODE_PACKAGE);
-    const compatibility = await readFile(path.join(repoRoot, "src", "plugin.ts"), "utf8");
-    expect(specifiers(compatibility)).toEqual(["./adapters/opencode.js"]);
+  it("names the removed host nowhere in source, package metadata, or documentation", async () => {
+    expect(await hostReferences()).toEqual([]);
   });
 
   it("documents source-tree invocation rather than claiming a repository install links the executable", async () => {

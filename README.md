@@ -1,10 +1,10 @@
 # Tasty
 
-Tasty is a file-based, adaptive decision assistant that learns a user's taste through pairwise comparisons. It is an independent product: a deterministic TypeScript core, an append-only file store, and a standalone `tasty` CLI. OpenCode is supported as one optional host adapter, not a requirement.
+Tasty is a file-based, adaptive decision assistant that learns a user's taste through pairwise comparisons. It is a self-contained product: a deterministic TypeScript core, an append-only file store, and a standalone `tasty` CLI. It integrates with no host application and requires none.
 
 ## What works
 
-- The agent (or you) plans question **purposes** from macro direction to detail and estimates the number of rounds.
+- You (or an agent you drive) plan question **purposes** from macro direction to detail and estimate the number of rounds.
 - Actual A/B prose is created just in time; the core validates and persists it.
 - Choices are A, B, M (hybrid), N (neither), and D (direct decision). M/D include the user's resolution.
 - Status reports `(3/11 예정)`-style progress and explains estimate revisions.
@@ -16,7 +16,7 @@ Tasty is a file-based, adaptive decision assistant that learns a user's taste th
 
 ## Install and check
 
-Requirements: Node.js 22+ and npm. OpenCode is **not** required, and neither is Bun.
+Requirements: Node.js 22+ and npm. Nothing else — no host application, no Bun.
 
 ### From a source checkout (development)
 
@@ -43,8 +43,9 @@ npm install --global ./tasty-0.1.0.tgz      # `tasty` on PATH
 npm install --omit=dev ./tasty-0.1.0.tgz    # `node_modules/.bin/tasty` in a project
 ```
 
-A production (`--omit=dev`) install pulls in `yaml` only — no OpenCode, no TypeScript toolchain. The
-package ships built JavaScript with type declarations, so the library entry points are importable too:
+A production (`--omit=dev`) install pulls in `yaml` only — no TypeScript toolchain, and no peer
+dependency to satisfy. The package ships built JavaScript with type declarations, so the library
+entry points are importable too:
 
 ```js
 import { TastyService } from "tasty";
@@ -98,32 +99,6 @@ tasty apply tasty_…
 
 The CLI is deliberately explicit. It does not route models, infer preferences, or generate candidates; you or your agent supply the prose and the synthesis, and the core validates provenance and persistence.
 
-## Optional: OpenCode adapter
-
-The OpenCode integration lives in `src/adapters/opencode.ts` and is exported from the optional `tasty/adapters/opencode` subpath (`tasty/plugin` remains as a compatibility re-export). Both ship as built JavaScript, so they are runnable from an installed package as well as from this checkout.
-
-`@opencode-ai/plugin` is an **optional peer dependency** (and a dev dependency here, for building and testing the adapter). npm therefore never installs it for a standalone `--omit=dev` consumer, and the core and CLI import graphs never reach it. Adapter consumers add it deliberately:
-
-```sh
-npm install ./tasty-0.1.0.tgz @opencode-ai/plugin
-```
-
-To use it from this repository, install OpenCode 1.18.27 or newer and open the checkout:
-
-```sh
-npx opencode-ai .
-```
-
-The local adapter is registered at `.opencode/plugins/tasty.ts` and the slash command at `.opencode/commands/tasty.md`. Then invoke:
-
-```text
-/tasty
-```
-
-`/tasty` opens with `무엇을 결정해볼까요?`, examples, and free-form input. You can also provide a target immediately, for example `/tasty README의 예제 스타일`; the command instructs the agent to preserve that input exactly. After a session is compiled, `/tasty apply <session-id>` loads its latest Taste Profile so OpenCode can create or revise an artifact under those rules. The profile keeps unresolved items unresolved rather than silently inventing a choice.
-
-The adapter exposes nine tools — `tasty_start`, `tasty_present`, `tasty_choose`, `tasty_revise_plan`, `tasty_status`, `tasty_resume`, `tasty_complete`, `tasty_compile`, `tasty_apply` — over the same `TastyService` the CLI uses, resolving storage from each tool call's `context.directory`.
-
 ## Data layout
 
 ```text
@@ -138,10 +113,10 @@ Session directories and event files are created with private permissions where t
 
 Several Tasty processes may work on the same session on one machine. Each mutation takes an exclusive per-session lock for its whole read-decide-write sequence, so concurrent commands either serialize or fail cleanly — the event log always replays. Waiting is bounded; a command that cannot take the lock reports the holding process and exits non-zero instead of writing. A lock left by a crashed process on this host is normally reclaimed automatically, provided it still records who held it. Reclaim runs under a short-lived guard file, `session.lock.reclaim`, that is never taken from another reclaimer on age — a reclaimer that looks stalled may only be paused, and stealing its guard risks deleting a live lock. A lock whose contents cannot be read is likewise never reclaimed, at any age: it records no process, and every acquisition passes through exactly that state for a moment between creating the file and writing its metadata, so age cannot tell a crash apart from a live acquirer. In both cases later writers time out rather than reclaim; recovery is manual: with no Tasty command running, delete `session.lock.reclaim`, then `session.lock` if its recorded process is really gone or it records nothing at all. This is single-host serialization: Tasty makes no concurrency guarantee for a workspace on a network or shared filesystem.
 
-## Core/host boundary
+## Structure
 
-`src/core.ts` is deterministic state transition and validation logic. `src/storage.ts` owns JSONL persistence and the per-session mutation boundary built on `src/lock.ts`, `src/compiler.ts` validates evidenced synthesis and owns immutable output versions, and `src/service.ts` coordinates them. All of these are host-neutral.
+`src/core.ts` is deterministic state transition and validation logic. `src/storage.ts` owns JSONL persistence and the per-session mutation boundary built on `src/lock.ts`, `src/compiler.ts` validates evidenced synthesis and owns immutable output versions, and `src/service.ts` coordinates them. `src/index.ts` exports all of it as the library entry point.
 
-Hosts sit on top and only translate calls: `src/cli.ts` maps argv to `TastyService`, and `src/adapters/opencode.ts` maps OpenCode custom-tool calls to the same service. Candidate generation and rule synthesis intentionally remain with the caller; the core validates provenance and persistence rather than embedding model routing or interview orchestration.
+`src/cli.ts` is the only front door: it maps argv to `TastyService` and formats the result, adding no decision semantics of its own. Any other caller — a script, an agent, another program — uses the same `TastyService` through the library entry point, and the package depends on no host application to do so. Candidate generation and rule synthesis intentionally remain with the caller; the core validates provenance and persistence rather than embedding model routing or interview orchestration.
 
 See [docs/product-contract.md](docs/product-contract.md) for semantics, limitations, and a walkthrough.

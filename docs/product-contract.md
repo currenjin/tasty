@@ -2,29 +2,20 @@
 
 ## Product promise
 
-Tasty helps a person reach an explicit, reusable decision by comparing concrete alternatives. It is a preference elicitation tool, not an autonomous judge and not a research-fact oracle. It is an independent product; a conversational host such as OpenCode is one optional way to drive it.
+Tasty helps a person reach an explicit, reusable decision by comparing concrete alternatives. It is a preference elicitation tool, not an autonomous judge and not a research-fact oracle. It is a self-contained product: it integrates with no host application, and none is needed to run it.
 
-## Front doors
+## Surface
 
-Every front door drives the same host-neutral core (`src/core.ts`, `src/storage.ts`, `src/compiler.ts`, `src/service.ts`) and therefore the same decision semantics, validation, and artifacts. Adding or removing a front door never changes what a choice means or what is persisted.
+Tasty is a host-neutral core (`src/core.ts`, `src/storage.ts`, `src/compiler.ts`, `src/service.ts`) with two ways in, both of which carry the same decision semantics, validation, and artifacts.
 
 1. **Standalone CLI (`src/cli.ts`).** `tasty [--root <path>] <command>` exposes the complete lifecycle: `start`, `present`, `choose`, `revise-plan`, `status`, `resume`, `complete`, `compile`, `apply`. Structured input is a JSON string or `@file`; results are JSON on stdout; failures exit non-zero with stderr text. `--root` selects the workspace and defaults to the current directory. The CLI is explicit rather than conversational: it never routes models, infers preferences, or generates candidates.
-2. **Optional OpenCode adapter (`src/adapters/opencode.ts`).** Nine custom tools — `tasty_start`, `tasty_present`, `tasty_choose`, `tasty_revise_plan`, `tasty_status`, `tasty_resume`, `tasty_complete`, `tasty_compile`, `tasty_apply` — resolving the workspace from each call's `context.directory`. It is exported only from the optional `./adapters/opencode` subpath (`./plugin` is a compatibility re-export), and `@opencode-ai/plugin` is never a production dependency of the core or CLI.
+2. **Core library (`src/index.ts`, exported as `tasty`).** `TastyService` — the same object the CLI drives — plus the core types and helpers, so any program can hold the lifecycle directly. Callers supply their own conversation, if any; Tasty ships none and assumes none.
 
-The conversational front door of the OpenCode adapter is `/tasty`. Its first visible prompt is exactly:
+The CLI is additionally reachable programmatically as `tasty/cli` (`src/cli.ts`), which exports `runCli` and its exit codes rather than the service: it runs a command line in-process against caller-supplied streams. Callers wanting the lifecycle itself use `tasty`.
 
-> 무엇을 결정해볼까요?
+Beyond `yaml`, the shipped package has no dependency, peer dependency, or plugin surface. There is no adapter subpath, and no host is expected to load Tasty into itself.
 
-It then offers these presets while allowing arbitrary text:
-
-1. 문서/가이드 방향
-2. 글쓰기/스타일 규칙
-3. 코드/테스트 접근법
-4. 프로젝트 컨벤션
-5. 디자인/UI 방향
-6. 프롬프트/에이전트 응답
-
-The target is preserved verbatim, including meaningful spacing and non-ASCII text. This holds for every front door: a target supplied to `tasty start` in JSON is stored exactly as written.
+The target is preserved verbatim, including meaningful spacing and non-ASCII text. This holds through both entry points: a target supplied to `tasty start` in JSON, or to `TastyService.start` directly, is stored exactly as written.
 
 ## Interaction contract
 
@@ -81,25 +72,22 @@ profiles/<target-slug>/v0001/
 
 ## Realistic walkthrough
 
-Shown through the conversational OpenCode adapter. The same sequence is available as explicit `tasty` CLI commands, and produces byte-identical artifacts.
+Shown through the `tasty` CLI. Driving `TastyService` from a program instead produces byte-identical artifacts.
 
-**User:** `/tasty 팀 API 가이드의 방향`
+The decision target is `팀 API 가이드의 방향`, supplied verbatim to `tasty start` along with an estimate of 4 rounds and the planned purposes: overall organization, example role, tone, and reference depth. Status displays `(0/4 예정)`.
 
-**Tasty:** `무엇을 결정해볼까요?` (the supplied free text is accepted without forcing a restatement). Tasty estimates 4 rounds and plans purposes: overall organization, example role, tone, and reference depth. It displays `(0/4 예정)`.
-
-For “overall organization,” the agent generates at that moment:
+For “overall organization,” the caller writes the pair at that moment and passes it to `tasty present`:
 
 - **A:** task-first recipes with links to reference pages
 - **B:** concept-first chapters followed by a complete reference
-- **M:** combine them (user supplies how)
-- **N:** neither
-- **D:** state a different direction directly
 
-The user chooses A because new contributors usually arrive with a concrete task. That reason is optional metadata, not a universal factual claim. Based on the answer, the agent realizes runnable examples and error examples need separate treatment. It calls the revision operation with estimate 5 and a reason. Tasty reports:
+`tasty choose --choice A --reason "…"` records A, because new contributors usually arrive with a concrete task. That reason is optional metadata, not a universal factual claim. `M` (hybrid), `N` (neither), and `D` (a direct decision) remain available; `M` and `D` carry the user's resolution text.
+
+The answer reveals that runnable examples and error examples need separate treatment, so the caller runs `tasty revise-plan` with estimate 5 and a reason. Status then surfaces:
 
 > 예상 질문 수가 4개에서 5개로 변경되었습니다: runnable examples and failure examples need separate decisions
 
-After subsequent choices, the user completes the session and compiles `profiles/팀-api-가이드의-방향/v0001/`. Running compile again creates `v0002/`; it does not mutate `v0001/`. Any later Tasty process can reload the session ID and reconstruct the same state from events — the same session started in OpenCode can be resumed with `tasty resume <id>`, and vice versa.
+After subsequent choices, `tasty complete` then `tasty compile` writes `profiles/팀-api-가이드의-방향/v0001/`. Running compile again creates `v0002/`; it does not mutate `v0001/`. Any later Tasty process can reload the session ID and reconstruct the same state from events, so a session started by one caller resumes with `tasty resume <id>` from another.
 
 ## Academic inspiration (scoped)
 
@@ -113,6 +101,7 @@ No maximum-regret optimizer, confidence model, or paper-specific ranking algorit
 
 ## Deliberate non-goals
 
+- integration into a host application: plugins, adapters, custom-tool surfaces, or slash commands
 - model-tier routing or provider selection
 - evolutionary loops
 - multi-agent orchestration

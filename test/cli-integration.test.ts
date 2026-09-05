@@ -13,7 +13,8 @@ import { importGraph } from "./import-graph.js";
 
 const run = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const OPENCODE_PACKAGE = "@opencode-ai/plugin";
+/** Host integration modules Tasty no longer has; the shipped tree must contain none of them. */
+const HOST_INTEGRATION = /plugin|adapter/i;
 const isWindows = process.platform === "win32";
 /** npm and npm-installed bins are `.cmd` shims on Windows, which Node only spawns through a shell. */
 const NPM = isWindows ? "npm.cmd" : "npm";
@@ -109,6 +110,15 @@ async function manifest(): Promise<{
   return JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
 }
 
+/** Every file the tarball actually shipped, as installed, relative to the package root. */
+async function shipped(): Promise<string[]> {
+  const entries = await readdir(installed, { withFileTypes: true, recursive: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.relative(installed, path.join(entry.parentPath, entry.name)))
+    .sort();
+}
+
 beforeAll(async () => {
   // `npm pack` runs the prepare script, so the tarball always carries a freshly built dist/.
   const packDirectory = await mkdtemp(path.join(tmpdir(), "tasty-pack-"));
@@ -139,23 +149,37 @@ beforeAll(async () => {
 const TARGET = "  우리 팀의 README 방향을 정하고 싶어요 ✨  ";
 
 describe("packed standalone install", () => {
-  it("installs into a --omit=dev consumer with only the production dependency and no OpenCode", async () => {
+  it("installs into a --omit=dev consumer with the production dependency as its whole tree", async () => {
     const modules = (await readdir(path.join(consumer, "node_modules"))).filter((entry) => !entry.startsWith("."));
+    const pkg = await manifest();
 
     expect(modules.sort()).toEqual(["tasty", "yaml"]);
-    expect(await exists(path.join(consumer, "node_modules", OPENCODE_PACKAGE))).toBe(false);
-    expect((await manifest()).dependencies).toEqual({ yaml: expect.any(String) });
+    expect(pkg.dependencies).toEqual({ yaml: expect.any(String) });
+    expect(pkg.peerDependencies ?? {}).toEqual({});
+    expect(pkg.peerDependenciesMeta ?? {}).toEqual({});
   });
 
   it("ships every declared export target as a real file with type declarations", async () => {
     const pkg = await manifest();
 
+    expect(Object.keys(pkg.exports).sort()).toEqual([".", "./cli", "./package.json"]);
     for (const [subpath, target] of Object.entries(pkg.exports)) {
       if (subpath === "./package.json") continue;
       expect(await exists(path.join(installed, target.default)), `${subpath} default`).toBe(true);
       expect(await exists(path.join(installed, target.types)), `${subpath} types`).toBe(true);
     }
     expect(path.resolve(installed, pkg.bin.tasty!)).toBe(path.join(installed, "dist", "src", "cli.js"));
+  });
+
+  it("ships only the built core and CLI, with no host integration module in the tarball", async () => {
+    const files = await shipped();
+
+    expect(files).toContain(path.join("dist", "src", "index.js"));
+    expect(files).toContain(path.join("dist", "src", "cli.js"));
+    expect(files.filter((file) => HOST_INTEGRATION.test(file))).toEqual([]);
+    // npm always ships the manifest and the readme; `files` governs everything else.
+    const ALWAYS_PACKED = new Set(["package.json", "README.md"]);
+    expect(files.filter((file) => !ALWAYS_PACKED.has(file) && !file.startsWith(`dist${path.sep}src${path.sep}`))).toEqual([]);
   });
 
   it("imports tasty and tasty/cli from the installed consumer and runs the library entry point", async () => {
@@ -190,40 +214,19 @@ describe("packed standalone install", () => {
     expect(fileURLToPath(result.cli)).toBe(path.join(installed, "dist", "src", "cli.js"));
   });
 
-  it("never reaches OpenCode from the installed core or CLI runtime import graph", async () => {
+  it("reaches only Node built-ins and yaml from the installed core and CLI runtime import graph", async () => {
     for (const entry of ["dist/src/index.js", "dist/src/cli.js"]) {
       const graph = await importGraph(installed, entry);
-      expect(graph.packages).not.toContain(OPENCODE_PACKAGE);
-      expect(graph.packages.every((name) => name.startsWith("node:") || name === "yaml")).toBe(true);
-      expect(graph.files).not.toContain(path.join("dist", "src", "plugin.js"));
-      expect(graph.files).not.toContain(path.join("dist", "src", "adapters", "opencode.js"));
+      expect(graph.packages.every((name) => name.startsWith("node:") || name === "yaml"), entry).toBe(true);
+      expect(graph.files.filter((file) => HOST_INTEGRATION.test(file)), entry).toEqual([]);
     }
   });
 
-  it("resolves the adapter subpaths to installed JavaScript that only OpenCode consumers must add", async () => {
-    const pkg = await manifest();
-    expect(pkg.peerDependencies).toHaveProperty(OPENCODE_PACKAGE);
-    expect(pkg.peerDependenciesMeta?.[OPENCODE_PACKAGE]?.optional).toBe(true);
+  it("exposes no host integration subpath a consumer could import", async () => {
+    const attempt = await inConsumer("host-subpath.mjs", 'await import("tasty/plugin");');
 
-    const resolved = json<Record<string, string>>(
-      await inConsumer(
-        "adapter-paths.mjs",
-        [
-          "process.stdout.write(JSON.stringify({",
-          '  adapter: import.meta.resolve("tasty/adapters/opencode"),',
-          '  plugin: import.meta.resolve("tasty/plugin"),',
-          "}));",
-        ].join("\n"),
-      ),
-    );
-    expect(fileURLToPath(resolved.adapter!)).toBe(path.join(installed, "dist", "src", "adapters", "opencode.js"));
-    expect(fileURLToPath(resolved.plugin!)).toBe(path.join(installed, "dist", "src", "plugin.js"));
-
-    // Importing the optional adapter fails only because OpenCode itself was deliberately not installed.
-    const attempt = await inConsumer("adapter-import.mjs", 'await import("tasty/adapters/opencode");');
     expect(attempt.code).not.toBe(0);
-    expect(attempt.stderr).toContain(OPENCODE_PACKAGE);
-    expect(attempt.stderr).toContain("ERR_MODULE_NOT_FOUND");
+    expect(attempt.stderr).toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
   });
 });
 
@@ -238,7 +241,7 @@ describe("standalone CLI subprocess", () => {
     expect(result.stdout).toContain("tasty [--root <path>] <command>");
   });
 
-  it("drives start through apply in a temporary workspace without OpenCode", async () => {
+  it("drives start through apply in a temporary workspace with no host beyond the CLI itself", async () => {
     const started = json<{ sessionId: string; target: string }>(
       await tasty(
         "start",
