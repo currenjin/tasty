@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false
+  },
+  // Adapters are built so `tasty/adapters/opencode` and `tasty/plugin` are runnable from an installed
+  // package. They stay unreachable from the core and CLI entry points, so a standalone install never
+  // loads them and never needs the optional `@opencode-ai/plugin` peer.
+  "include": ["src/**/*.ts"]
+}

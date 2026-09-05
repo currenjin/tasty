@@ -1,23 +1,54 @@
 {
-  "name": "tasty-opencode",
+  "name": "tasty",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A file-based, adaptive pairwise decision assistant for OpenCode",
+  "description": "A file-based, adaptive pairwise decision assistant with a standalone CLI",
+  "bin": {
+    "tasty": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist/src"
+  ],
   "exports": {
-    ".": "./src/index.ts",
-    "./plugin": "./src/plugin.ts"
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./cli": {
+      "types": "./dist/src/cli.d.ts",
+      "default": "./dist/src/cli.js"
+    },
+    "./adapters/opencode": {
+      "types": "./dist/src/adapters/opencode.d.ts",
+      "default": "./dist/src/adapters/opencode.js"
+    },
+    "./plugin": {
+      "types": "./dist/src/plugin.d.ts",
+      "default": "./dist/src/plugin.js"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.18.27",
     "yaml": "^2.8.1"
   },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.18.27"
+  },
+  "peerDependenciesMeta": {
+    "@opencode-ai/plugin": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.27",
     "@types/node": "^24.3.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

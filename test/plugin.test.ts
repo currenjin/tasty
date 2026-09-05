@@ -2,9 +2,27 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import TastyAdapter from "../src/adapters/opencode.js";
 import TastyPlugin from "../src/plugin.js";
 
+const NINE_TOOLS = [
+  "tasty_start",
+  "tasty_present",
+  "tasty_choose",
+  "tasty_revise_plan",
+  "tasty_status",
+  "tasty_resume",
+  "tasty_complete",
+  "tasty_compile",
+  "tasty_apply",
+];
+
 describe("OpenCode plugin vertical smoke", () => {
+  it("re-exports the adapter unchanged from the compatibility path", async () => {
+    expect(TastyPlugin).toBe(TastyAdapter);
+    expect(Object.keys((await TastyAdapter({} as never)).tool!).sort()).toEqual([...NINE_TOOLS].sort());
+  });
+
   it("registers the complete decision flow and applies its compiled profile", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "tasty-plugin-"));
     const hooks = await TastyPlugin({} as never);
@@ -20,19 +38,7 @@ describe("OpenCode plugin vertical smoke", () => {
       async ask() {},
     };
 
-    expect(Object.keys(tools)).toEqual(
-      expect.arrayContaining([
-        "tasty_start",
-        "tasty_present",
-        "tasty_choose",
-        "tasty_revise_plan",
-        "tasty_status",
-        "tasty_resume",
-        "tasty_complete",
-        "tasty_compile",
-        "tasty_apply",
-      ]),
-    );
+    expect(Object.keys(tools)).toEqual(expect.arrayContaining(NINE_TOOLS));
 
     const started = JSON.parse(
       (await tools.tasty_start!.execute(

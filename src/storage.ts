@@ -3,19 +3,27 @@ import path from "node:path";
 import type { SessionEvent, TasteSession } from "./types.js";
 import { reduceEvents } from "./core.js";
 import { appendUtf8NoFollow, assertNoSymbolicLinks, readUtf8NoFollow, writeUtf8ExclusiveNoFollow } from "./filesystem.js";
+import { acquireLock, type LockOptions } from "./lock.js";
 
 const SAFE_ID = /^[a-zA-Z0-9_-]+$/;
 
 export class FileSessionStore {
   readonly sessionsDir: string;
 
-  constructor(readonly rootDir: string) {
+  constructor(
+    readonly rootDir: string,
+    private readonly lockOptions: LockOptions = {},
+  ) {
     this.sessionsDir = path.join(rootDir, ".tasty", "sessions");
   }
 
   private eventPath(sessionId: string): string {
     if (!SAFE_ID.test(sessionId)) throw new Error("invalid session id");
     return path.join(this.sessionsDir, sessionId, "events.jsonl");
+  }
+
+  private lockPath(sessionId: string): string {
+    return path.join(path.dirname(this.eventPath(sessionId)), "session.lock");
   }
 
   async create(events: SessionEvent[]): Promise<TasteSession> {
@@ -31,6 +39,35 @@ export class FileSessionStore {
       events.map((event) => `${JSON.stringify(event)}\n`).join(""),
     );
     return session;
+  }
+
+  /**
+   * The per-session exclusive boundary. Everything that turns observed state into a new event — the
+   * load, the transition validation, the append, and for compilation the artifact publication —
+   * happens while this process holds the lock, so a concurrent writer can neither read state that is
+   * about to change nor append an event that replay would reject.
+   */
+  async withSessionLock<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    const lockPath = this.lockPath(sessionId);
+    await assertNoSymbolicLinks(this.rootDir, lockPath);
+    const handle = await acquireLock(lockPath, this.lockOptions).catch((error: unknown) => {
+      // The lock lives beside the event log, so a missing directory means a missing session.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`unknown session: ${sessionId}`);
+      throw error;
+    });
+    try {
+      return await run();
+    } finally {
+      await handle.release();
+    }
+  }
+
+  /** Loads, validates the caller's transition against that state, and appends it under one lock. */
+  async mutate(sessionId: string, transition: (session: TasteSession) => SessionEvent): Promise<TasteSession> {
+    return this.withSessionLock(sessionId, async () => {
+      const session = await this.load(sessionId);
+      return this.append(sessionId, transition(session));
+    });
   }
 
   async append(sessionId: string, event: SessionEvent): Promise<TasteSession> {

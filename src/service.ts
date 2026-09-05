@@ -10,6 +10,7 @@ import {
   startEvents,
   systemClock,
 } from "./core.js";
+import type { LockOptions } from "./lock.js";
 import { FileSessionStore } from "./storage.js";
 import type { Candidate, ChoiceType, Clock, IdSource, PlanItem, ProfileSynthesis, Reference, TasteSession } from "./types.js";
 
@@ -20,8 +21,9 @@ export class TastyService {
     readonly rootDir: string,
     private readonly clock: Clock = systemClock,
     private readonly ids: IdSource = randomIds,
+    lockOptions: LockOptions = {},
   ) {
-    this.store = new FileSessionStore(rootDir);
+    this.store = new FileSessionStore(rootDir, lockOptions);
   }
 
   async start(input: {
@@ -35,23 +37,19 @@ export class TastyService {
   }
 
   async present(sessionId: string, input: { planItemId: string; candidates: [Candidate, Candidate] }): Promise<TasteSession> {
-    const session = await this.store.load(sessionId);
-    return this.store.append(sessionId, presentComparison(session, input, this.clock, this.ids));
+    return this.store.mutate(sessionId, (session) => presentComparison(session, input, this.clock, this.ids));
   }
 
   async choose(sessionId: string, input: { choice: ChoiceType; reason?: string; resolution?: string }): Promise<TasteSession> {
-    const session = await this.store.load(sessionId);
-    return this.store.append(sessionId, recordChoice(session, input, this.clock));
+    return this.store.mutate(sessionId, (session) => recordChoice(session, input, this.clock));
   }
 
   async revise(sessionId: string, input: { estimatedRounds: number; reason: string; items: PlanItem[] }): Promise<TasteSession> {
-    const session = await this.store.load(sessionId);
-    return this.store.append(sessionId, revisePlan(session, input, this.clock));
+    return this.store.mutate(sessionId, (session) => revisePlan(session, input, this.clock));
   }
 
   async complete(sessionId: string): Promise<TasteSession> {
-    const session = await this.store.load(sessionId);
-    return this.store.append(sessionId, completeSession(session, this.clock));
+    return this.store.mutate(sessionId, (session) => completeSession(session, this.clock));
   }
 
   async status(sessionId: string): Promise<{ session: TasteSession; progress: ReturnType<typeof progress> }> {
@@ -63,12 +61,19 @@ export class TastyService {
     return this.store.load(sessionId);
   }
 
+  /**
+   * Publication and the event recording it share one lock, so no other writer interleaves between them
+   * and the event always follows the version it records. The pair is ordered, not transactional: a crash
+   * in between leaves a published version whose event was never appended.
+   */
   async compile(sessionId: string, synthesis?: ProfileSynthesis): Promise<CompiledProfile> {
-    const session = await this.store.load(sessionId);
-    if (session.status !== "complete") throw new Error("session must be complete before compiling");
-    const compiled = await compileProfile(this.rootDir, session, this.clock.now(), synthesis);
-    await this.store.append(sessionId, compiled.event);
-    return compiled;
+    return this.store.withSessionLock(sessionId, async () => {
+      const session = await this.store.load(sessionId);
+      if (session.status !== "complete") throw new Error("session must be complete before compiling");
+      const compiled = await compileProfile(this.rootDir, session, this.clock.now(), synthesis);
+      await this.store.append(sessionId, compiled.event);
+      return compiled;
+    });
   }
 
   async apply(sessionId: string, version?: number): Promise<AppliedProfile> {
