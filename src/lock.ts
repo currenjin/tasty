@@ -70,16 +70,47 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/** A process id a real process could hold: within the range pids are allocated from, and probeable. */
+function isProcessId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Accepts only the instant `newOwner` writes — an ISO-8601 string that names a real date and reproduces
+ * itself through `Date`. Anything else, including a date-only string or a shape that merely parses, is
+ * evidence the file was not written by an acquisition.
+ */
+function isAcquisitionTimestamp(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+/**
+ * Returns owner metadata only when every field identifies one acquisition well enough to act on: a
+ * token to check an unlink against, a host to compare with this one, a pid to probe, and the instant
+ * the lock was taken. Partially written, truncated, or foreign metadata yields `undefined`, which the
+ * callers treat as "no evidence of a dead owner" — see `reclaimIfStale`. Loosening any of these turns
+ * a file Tasty cannot attribute into a reclaimable one: an empty token would let `releaseOwnedFile`
+ * match a successor that also recorded nothing, and a pid of `0`, a negative pid, or one past the safe
+ * integer range probes as "not running" while naming no process that ever existed.
+ */
 function parseOwner(raw: string): LockOwner | undefined {
+  let value: unknown;
   try {
-    const value = JSON.parse(raw) as Partial<LockOwner>;
-    if (typeof value.token !== "string" || typeof value.host !== "string" || !Number.isInteger(value.pid)) {
-      return undefined;
-    }
-    return { token: value.token, pid: value.pid!, host: value.host, acquiredAt: String(value.acquiredAt) };
+    value = JSON.parse(raw);
   } catch {
     return undefined;
   }
+  if (typeof value !== "object" || value === null) return undefined;
+  const { token, pid, host, acquiredAt } = value as Partial<LockOwner>;
+  if (!isNonEmptyString(token) || !isNonEmptyString(host)) return undefined;
+  if (!isProcessId(pid) || !isAcquisitionTimestamp(acquiredAt)) return undefined;
+  return { token, pid, host, acquiredAt };
 }
 
 /** Returns the current owner, `undefined` for an unreadable lock, or `null` when the lock is free. */
@@ -133,11 +164,12 @@ async function releaseOwnedFile(file: string, token: string): Promise<void> {
  * recorded host matches this host and its recorded pid is not running. Anything else waits out the
  * timeout instead. Recycled pids only ever cause a refusal to reclaim, never a wrongful one.
  *
- * A malformed lock — including the empty file every acquisition briefly publishes between its
- * exclusive create and its metadata write — is **never** reclaimed, at any age. Such a file carries
- * no token and no pid, so nothing distinguishes a crash mid-write from an acquirer descheduled inside
- * that window; an old mtime does not imply a dead creator, and unlinking on age would take the lock
- * out from under a live holder that is about to record itself.
+ * A malformed lock — anything `parseOwner` rejects, including the empty file every acquisition briefly
+ * publishes between its exclusive create and its metadata write, and metadata that names no usable
+ * token, host, pid, or acquisition instant — is **never** reclaimed, at any age. Such a file carries
+ * no owner this reclaimer can act on, so nothing distinguishes a crash mid-write from an acquirer
+ * descheduled inside that window; an old mtime does not imply a dead creator, and unlinking on age
+ * would take the lock out from under a live holder that is about to record itself.
  *
  * Three rules keep the whole sequence safe even when this reclaimer is descheduled for an unbounded
  * stretch between any two of its steps: an existing guard is never stolen on age, because a reclaimer

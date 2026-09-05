@@ -43,6 +43,22 @@ async function plant(owner: Partial<LockOwner>): Promise<LockOwner> {
   return planted;
 }
 
+/**
+ * Plants a lock whose metadata names no unambiguous owner, and returns the exact bytes written so a
+ * test can assert the file was left untouched. `undefined` in `overrides` drops the key entirely.
+ */
+async function plantNonconforming(overrides: Record<string, unknown>): Promise<string> {
+  const raw = JSON.stringify({
+    token: "planted-token",
+    pid: 424242,
+    host: hostname(),
+    acquiredAt: new Date().toISOString(),
+    ...overrides,
+  });
+  await writeFile(lockPath, raw, { encoding: "utf8", mode: 0o600 });
+  return raw;
+}
+
 /** Plants a reclaim guard that this process did not create, standing in for another reclaimer. */
 async function plantGuard(owner: Partial<LockOwner> = {}): Promise<LockOwner> {
   const planted: LockOwner = {
@@ -183,6 +199,58 @@ describe("exclusive lock file", () => {
     }
 
     expect((await readOwner()).token).toBe("mid-write");
+  });
+
+  /**
+   * Each shape overrides exactly one field of otherwise valid metadata, so a failure names the field
+   * that was accepted too loosely. None of them attributes the lock to a process this reclaimer could
+   * have probed: a lock with no token cannot be unlinked safely, one with no host may belong to another
+   * machine, a pid outside the range a real process id can occupy probes as "not running" whatever the
+   * platform does with it, and a timestamp that is not the ISO instant an acquisition writes is
+   * evidence the file was not produced by an acquisition at all.
+   */
+  const nonconformingOwners: ReadonlyArray<[string, Record<string, unknown>]> = [
+    ["an empty token", { token: "" }],
+    ["a missing token", { token: undefined }],
+    ["a non-string token", { token: 7 }],
+    ["an empty host", { host: "" }],
+    ["a missing host", { host: undefined }],
+    ["a non-string host", { host: ["elsewhere"] }],
+    ["a zero pid", { pid: 0 }],
+    ["a negative pid", { pid: -424242 }],
+    ["a fractional pid", { pid: 424242.5 }],
+    ["a pid beyond the safe integer range", { pid: Number.MAX_SAFE_INTEGER + 2 }],
+    ["a non-numeric pid", { pid: "424242" }],
+    ["a missing acquiredAt", { acquiredAt: undefined }],
+    ["an empty acquiredAt", { acquiredAt: "" }],
+    ["an unparseable acquiredAt", { acquiredAt: "whenever" }],
+    ["a non-string acquiredAt", { acquiredAt: 1_700_000_000_000 }],
+    ["an acquiredAt that is not the instant an acquisition writes", { acquiredAt: "2024-01-01" }],
+    ["no fields at all", { token: undefined, pid: undefined, host: undefined, acquiredAt: undefined }],
+  ];
+
+  describe.each(nonconformingOwners)("a lock recording %s", (_label, overrides) => {
+    it("is never reclaimed, however old, and times out leaving the file byte for byte intact", async () => {
+      const raw = await plantNonconforming(overrides);
+      await backdate(lockPath, 3_600_000);
+
+      await expect(acquireLock(lockPath, { timeoutMs: 80, pollIntervalMs: 5, ...dead })).rejects.toBeInstanceOf(
+        LockTimeoutError,
+      );
+
+      expect(await readFile(lockPath, "utf8")).toBe(raw);
+      // A guard taken to inspect the lock is still released; only the lock itself survives.
+      expect(await exists(guardPath)).toBe(false);
+    });
+  });
+
+  it("still reclaims a dead owner whose pid sits at the edge of the valid range", async () => {
+    await plant({ pid: Number.MAX_SAFE_INTEGER });
+
+    const handle = await acquireLock(lockPath, { timeoutMs: 500, pollIntervalMs: 5, ...dead });
+
+    expect((await readOwner()).pid).toBe(process.pid);
+    await handle.release();
   });
 
   it("releases without deleting a lock that already belongs to a successor", async () => {
